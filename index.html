@@ -262,6 +262,7 @@
 
   .navbar{flex-shrink:0;display:none;grid-template-columns:repeat(5,1fr);background:#fff;border-top:1px solid #f0f7f3;padding:8px 6px 10px;box-shadow:0 -3px 12px rgba(15,61,46,.04)}
   #nav-guru{grid-template-columns:repeat(4,1fr)}
+  #nav-murid{grid-template-columns:repeat(4,1fr)}
   .navbar.show{display:grid}
   .nav{background:none;border:none;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;padding:6px 0;cursor:pointer;color:#9bbcad;font-family:inherit;position:relative}
   .nav i{font-size:18px;line-height:1;display:flex;align-items:center;justify-content:center;width:24px;height:24px}
@@ -605,7 +606,6 @@
 
   <nav class="navbar" id="nav-murid">
     <button class="nav active" data-page="beranda" onclick="nav('beranda')"><i class="fas fa-house"></i><span>Beranda</span></button>
-    <button class="nav" data-page="tanya" onclick="nav('tanya')"><i class="fas fa-circle-question"></i><span>Tanya</span></button>
     <button class="nav" data-page="curhat" onclick="nav('curhat')"><i class="fas fa-comments"></i><span>Curhat</span></button>
     <button class="nav" data-page="ai" onclick="nav('ai')"><i class="fas fa-robot"></i><span>AI</span></button>
     <button class="nav" data-page="profil" onclick="nav('profil')"><i class="fas fa-user"></i><span>Profil</span></button>
