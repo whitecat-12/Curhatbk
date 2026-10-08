@@ -158,6 +158,21 @@
   .chat-tips i{color:#2bb673;font-size:13px}
   .chat-tips b{color:#1a7a52}
 
+  /* ============ MODE ANONIM ============ */
+  .anon-bar{margin:8px 14px 0;display:flex;align-items:center;justify-content:space-between;gap:10px;background:#fff;border:1.5px solid #e0f0e7;border-radius:12px;padding:8px 12px;flex-shrink:0;transition:.25s}
+  .anon-bar.on{border-color:#ff9bb1;background:#fff5f8}
+  .anon-bar .anon-txt{display:flex;align-items:center;gap:9px;font-size:11px;color:#1a5c42;min-width:0}
+  .anon-bar .anon-txt > i{color:#2bb673;font-size:15px;flex-shrink:0}
+  .anon-bar.on .anon-txt > i{color:#e91e63}
+  .anon-bar small{display:block;font-size:9.5px;color:#7a9c8c;margin-top:1px;line-height:1.35}
+  .switch{position:relative;width:40px;height:22px;flex-shrink:0}
+  .switch input{opacity:0;width:0;height:0}
+  .slider{position:absolute;inset:0;background:#d8ece1;border-radius:22px;cursor:pointer;transition:.25s}
+  .slider::before{content:'';position:absolute;width:16px;height:16px;left:3px;top:3px;background:#fff;border-radius:50%;transition:.25s;box-shadow:0 1px 3px rgba(0,0,0,.2)}
+  .switch input:checked + .slider{background:#e91e63}
+  .switch input:checked + .slider::before{transform:translateX(18px)}
+  .anon-tag{font-size:8.5px;font-weight:700;background:#fde4ec;color:#e91e63;padding:2px 6px;border-radius:6px;white-space:nowrap}
+
   /* ============ AREA PESAN ============ */
   .msgs{flex:1;overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:11px;background:radial-gradient(circle at 10% 10%,rgba(43,182,115,.03) 0%,transparent 40%),radial-gradient(circle at 90% 90%,rgba(43,182,115,.03) 0%,transparent 40%),#fbfefc}
   .msgs::-webkit-scrollbar{width:4px}
@@ -178,6 +193,7 @@
 
   .msg .mav{width:32px;height:32px;border-radius:10px;background:linear-gradient(135deg,#a8e6c3,#2bb673);color:#fff;display:flex;align-items:center;justify-content:center;font-size:12px;flex-shrink:0;margin-top:2px;box-shadow:0 2px 6px rgba(43,182,115,.2)}
   .msg .mav.ai{background:linear-gradient(135deg,#5cc98d,#1a7a52)}
+  .msg .mav.anon{background:linear-gradient(135deg,#ff9bb1,#e91e63)}
   .msg .wrap{display:flex;flex-direction:column;gap:3px;min-width:0;max-width:100%}
   .msg .txt{padding:10px 14px;border-radius:16px;font-size:12.8px;line-height:1.5;word-wrap:break-word;overflow-wrap:anywhere;white-space:pre-wrap}
 
@@ -289,7 +305,7 @@
   <div class="splash-sub">Ruang cerita aman & nyaman</div>
   <div class="splash-line"></div>
   <div class="splash-load"><span></span><span></span><span></span></div>
-  <div class="splash-foot">Bimbingan Konseling • Versi 2.2</div>
+  <div class="splash-foot">Bimbingan Konseling • Versi 2.3</div>
 </div>
 
 <div class="auth" id="authScreen">
@@ -529,6 +545,13 @@
         <i class="fas fa-shield-heart"></i>
         <div>Ceritamu <b>dijaga kerahasiaannya</b> oleh Guru BK. Cerita apa saja dengan bebas 💚</div>
       </div>
+      <div class="anon-bar" id="anonBar" style="display:none">
+        <div class="anon-txt">
+          <i class="fas fa-user-secret"></i>
+          <div><b>Mode Anonim</b><small id="anonDesc">Namamu tidak ditampilkan ke Guru BK</small></div>
+        </div>
+        <label class="switch"><input type="checkbox" id="anonToggle" onchange="toggleAnon(this.checked)"><span class="slider"></span></label>
+      </div>
       <div class="msgs" id="chat-msgs"></div>
       <div class="chat-input">
         <div class="input-wrap"><input id="chat-field" placeholder="Tulis pesan..." maxlength="1000"></div>
@@ -664,6 +687,7 @@ let unsubStreak  = null;
 let unsubGuru    = null;
 let currentPartner = null;
 let currentChatId  = null;
+let currentAnon    = false;   // apakah chat yang sedang dibuka adalah chat anonim
 let regRole = 'murid';
 let registering = false;   // mencegah race antara pendaftaran & onAuthStateChanged
 
@@ -675,7 +699,8 @@ const pad = n => String(n).padStart(2,'0');
 const nowStr = () => { const d = new Date(); return pad(d.getHours()) + ':' + pad(d.getMinutes()); };
 const esc = s => String(s??'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const tsToDate = ts => ts?.toDate ? ts.toDate() : (ts instanceof Date ? ts : null);
-const makeChatId = (a,b) => [a,b].sort().join('__');
+// chat normal: uidA__uidB ; chat anonim: uidA__uidB__anon (thread terpisah)
+const makeChatId = (a,b,anon=false) => [a,b].sort().join('__') + (anon ? '__anon' : '');
 // kunci tanggal LOKAL (bukan UTC) agar akurat untuk WIB
 const dayKey = d => d.getFullYear() + '-' + pad(d.getMonth()+1) + '-' + pad(d.getDate());
 const fmtDT = d => d ? `${d.getDate()}/${d.getMonth()+1} ${pad(d.getHours())}:${pad(d.getMinutes())}` : '—';
@@ -815,6 +840,7 @@ function cleanupListeners(){
   unsubGuru?.();    unsubGuru = null;
   currentPartner = null;
   currentChatId = null;
+  currentAnon = false;
 }
 
 /* =========================================================
@@ -899,7 +925,7 @@ window.nav = (name) => {
   // keluar dari chatroom lewat navbar -> hentikan listener pesan
   if(name !== 'chatroom' && unsubMsgs){
     unsubMsgs(); unsubMsgs = null;
-    currentPartner = null; currentChatId = null;
+    currentPartner = null; currentChatId = null; currentAnon = false;
   }
 
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
@@ -1011,26 +1037,51 @@ function loadDaftarGuru(){
 document.addEventListener('click', (e) => {
   const r = e.target.closest('[data-open]');
   if(!r) return;
-  if(r.dataset.open === 'list') openChatFromList(r.dataset.uid);
-  else openChatWith(r.dataset.uid, r.dataset.nama, r.dataset.role);
+  if(r.dataset.open === 'list'){
+    openChatFromList(r.dataset.uid, r.dataset.chat, r.dataset.anon === '1', r.dataset.alias);
+  } else {
+    openChatWith(r.dataset.uid, r.dataset.nama, r.dataset.role);
+  }
 });
 
 /* =========================================================
    CHAT ROOM
    ========================================================= */
-async function openChatWith(partnerUid, partnerNama, partnerRole){
-  currentPartner = { uid: partnerUid, nama: partnerNama, role: partnerRole };
-  currentChatId  = makeChatId(ME.uid, partnerUid);
+// tampilan header chat. Guru yang membuka chat anonim hanya melihat alias.
+function paintChatHeader(){
+  const p = currentPartner;
+  if(!p) return;
+  const teacherSeesAnon = ME.role === 'guru' && currentAnon;
+  const name = teacherSeesAnon ? (p.alias || 'Anonim') : p.nama;
 
-  $('chatName').innerHTML = esc(partnerNama) + ' <i class="fas fa-circle-check"></i>';
+  $('chatName').innerHTML = esc(name) + (teacherSeesAnon
+      ? ' <span class="anon-tag">Anonim</span>'
+      : ' <i class="fas fa-circle-check"></i>');
   $('chatStatus').innerHTML = '<i class="fas fa-circle"></i> ' +
-      (partnerRole === 'guru' ? 'Guru BK' : 'Murid');
-  $('chatAvatar').innerHTML = partnerRole === 'guru'
-      ? '<i class="fas fa-user-tie"></i>' : '<i class="fas fa-user-graduate"></i>';
-  $('chatAvatar').style.background = partnerRole === 'guru'
-      ? 'linear-gradient(135deg,#a8e6c3,#2bb673)'
-      : 'linear-gradient(135deg,#5cc98d,#1a7a52)';
+      (p.role === 'guru' ? 'Guru BK' : 'Murid') + (currentAnon ? ' • Anonim' : '');
+  $('chatAvatar').innerHTML = teacherSeesAnon
+      ? '<i class="fas fa-user-secret"></i>'
+      : (p.role === 'guru' ? '<i class="fas fa-user-tie"></i>' : '<i class="fas fa-user-graduate"></i>');
+  $('chatAvatar').style.background = teacherSeesAnon
+      ? 'linear-gradient(135deg,#ff9bb1,#e91e63)'
+      : (p.role === 'guru' ? 'linear-gradient(135deg,#a8e6c3,#2bb673)' : 'linear-gradient(135deg,#5cc98d,#1a7a52)');
 
+  // bar anonim hanya untuk murid
+  const bar = $('anonBar');
+  bar.style.display = (ME.role === 'murid') ? 'flex' : 'none';
+  bar.classList.toggle('on', currentAnon);
+  $('anonToggle').checked = currentAnon;
+  $('anonDesc').textContent = currentAnon
+      ? 'Aktif: Guru BK hanya melihatmu sebagai "Anonim"'
+      : 'Namamu tidak ditampilkan ke Guru BK';
+}
+
+async function openChatWith(partnerUid, partnerNama, partnerRole, opts = {}){
+  currentAnon = !!opts.anon;
+  currentPartner = { uid: partnerUid, nama: partnerNama, role: partnerRole, alias: opts.alias || null };
+  currentChatId  = opts.chatId || makeChatId(ME.uid, partnerUid, currentAnon);
+
+  paintChatHeader();
   $('chatTips').style.display = (ME.role === 'murid') ? 'flex' : 'none';
 
   nav('chatroom');
@@ -1043,19 +1094,40 @@ async function openChatWith(partnerUid, partnerNama, partnerRole){
   }
 }
 
+// murid: pindah antara chat normal <-> chat anonim (thread terpisah)
+window.toggleAnon = async (on) => {
+  if(!ME || ME.role !== 'murid' || !currentPartner) return;
+  unsubMsgs?.(); unsubMsgs = null;
+  currentAnon = !!on;
+  currentChatId = makeChatId(ME.uid, currentPartner.uid, currentAnon);
+  paintChatHeader();
+  try {
+    await ensureChatDoc();
+    listenMessages();
+  } catch(err){
+    console.error(err);
+    $('chat-msgs').innerHTML = '<div class="empty"><i class="fas fa-circle-exclamation"></i><h4>Gagal membuka chat</h4><p>Coba lagi nanti.</p></div>';
+  }
+};
+
 async function ensureChatDoc(){
   const ref = doc(db, 'chats', currentChatId);
   const snap = await getDoc(ref);
   if(!snap.exists()){
     const muridId = ME.role === 'murid' ? ME.uid : currentPartner.uid;
     const guruId  = ME.role === 'guru'  ? ME.uid : currentPartner.uid;
-    await setDoc(ref, {
+    const data = {
       participants: [ME.uid, currentPartner.uid],
       muridId, guruId,
       lastMessage: '',
       lastAt: serverTimestamp(),
-      createdAt: serverTimestamp()
-    });
+      createdAt: serverTimestamp(),
+      anonim: currentAnon
+    };
+    if(currentAnon){
+      data.anonAlias = 'Anonim-' + String(Math.floor(1000 + Math.random()*9000));
+    }
+    await setDoc(ref, data);
   }
 }
 
@@ -1088,7 +1160,9 @@ function listenMessages(){
 
   unsubMsgs = onSnapshot(q, (snap) => {
     if(snap.empty){
-      box.innerHTML = '<div class="empty"><i class="fas fa-comment-dots"></i><h4>Belum ada pesan</h4><p>Mulai percakapan dengan sopan & jujur 💚</p></div>';
+      box.innerHTML = currentAnon
+        ? '<div class="empty"><i class="fas fa-user-secret"></i><h4>Chat anonim</h4><p>Guru BK tidak akan melihat namamu di percakapan ini 💚</p></div>'
+        : '<div class="empty"><i class="fas fa-comment-dots"></i><h4>Belum ada pesan</h4><p>Mulai percakapan dengan sopan & jujur 💚</p></div>';
       return;
     }
 
@@ -1112,8 +1186,15 @@ function listenMessages(){
         lastDay = k;
       }
 
-      const avatar = mine ? '' :
-        `<div class="mav">${m.senderRole === 'guru' ? '<i class="fas fa-user-tie"></i>' : '<i class="fas fa-user-graduate"></i>'}</div>`;
+      // avatar lawan bicara: guru melihat ikon anonim jika chat anonim
+      let avatar = '';
+      if(!mine){
+        if(currentAnon && m.senderRole === 'murid'){
+          avatar = '<div class="mav anon"><i class="fas fa-user-secret"></i></div>';
+        } else {
+          avatar = `<div class="mav">${m.senderRole === 'guru' ? '<i class="fas fa-user-tie"></i>' : '<i class="fas fa-user-graduate"></i>'}</div>`;
+        }
+      }
 
       html += `<div class="msg ${mine ? 'user' : 'other'}">
         ${avatar}
@@ -1134,6 +1215,7 @@ window.closeChat = () => {
   unsubMsgs?.(); unsubMsgs = null;
   currentPartner = null;
   currentChatId = null;
+  currentAnon = false;
   nav(ME.role === 'guru' ? 'gchat' : 'curhat');
 };
 
@@ -1150,7 +1232,8 @@ window.sendChat = async () => {
     await addDoc(collection(db, 'chats', currentChatId, 'messages'), {
       senderId: ME.uid,
       senderRole: ME.role,
-      senderNama: ME.nama,
+      // chat anonim: jangan simpan nama asli murid di pesan
+      senderNama: (currentAnon && ME.role === 'murid') ? 'Anonim' : ME.nama,
       text: txt.slice(0,1000),
       createdAt: serverTimestamp()
     });
@@ -1366,10 +1449,12 @@ function listenChatListGuru(){
 
     box.innerHTML = chats.map(c => {
       const otherId = c.participants.find(p => p !== ME.uid);
-      return `<div class="row" data-chat="${esc(c.id)}" data-open="list" data-uid="${esc(otherId)}">
-        <div class="av"><i class="fas fa-user-graduate"></i></div>
+      const anon  = !!c.anonim;
+      const alias = c.anonAlias || 'Anonim';
+      return `<div class="row" data-chat="${esc(c.id)}" data-open="list" data-uid="${esc(otherId)}"${anon ? ` data-anon="1" data-alias="${esc(alias)}"` : ''}>
+        <div class="av ${anon ? 'pink' : ''}"><i class="fas ${anon ? 'fa-user-secret' : 'fa-user-graduate'}"></i></div>
         <div class="info">
-          <h4>Memuat…</h4>
+          <h4>${anon ? esc(alias) + ' <span class="anon-tag">Anonim</span>' : 'Memuat…'}</h4>
           <p>${esc(c.lastMessage || 'Belum ada pesan')} • ${fmtDT(c._d)}</p>
         </div>
         <i class="fas fa-chevron-right chev"></i>
@@ -1377,6 +1462,7 @@ function listenChatListGuru(){
     }).join('');
 
     chats.forEach(async (c) => {
+      if(c.anonim) return;   // jangan ambil nama asli untuk chat anonim
       const otherId = c.participants.find(p => p !== ME.uid);
       try {
         const u = await getDoc(doc(db,'users',otherId));
@@ -1387,13 +1473,18 @@ function listenChatListGuru(){
   }, err => console.error(err));
 }
 
-async function openChatFromList(partnerUid){
+async function openChatFromList(partnerUid, chatId, anon, alias){
+  if(anon){
+    // chat anonim: jangan pernah mengambil nama asli murid
+    openChatWith(partnerUid, alias || 'Anonim', 'murid', { anon:true, chatId, alias });
+    return;
+  }
   try {
     const u = await getDoc(doc(db,'users',partnerUid));
     const nama = u.exists() ? u.data().nama : 'Murid';
-    openChatWith(partnerUid, nama, 'murid');
+    openChatWith(partnerUid, nama, 'murid', { chatId });
   } catch(e){
-    openChatWith(partnerUid, 'Murid', 'murid');
+    openChatWith(partnerUid, 'Murid', 'murid', { chatId });
   }
 }
 
