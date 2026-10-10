@@ -306,7 +306,7 @@
   <div class="splash-sub">Ruang cerita aman & nyaman</div>
   <div class="splash-line"></div>
   <div class="splash-load"><span></span><span></span><span></span></div>
-  <div class="splash-foot">Bimbingan Konseling • Versi 2.4</div>
+  <div class="splash-foot">Bimbingan Konseling • Versi 2.5</div>
 </div>
 
 <div class="auth" id="authScreen">
@@ -541,6 +541,7 @@
           <h3 id="chatName">—</h3>
           <p id="chatStatus"><i class="fas fa-circle"></i> Online</p>
         </div>
+        <button class="head-btn" onclick="clearLocalChat()" title="Hapus riwayat di perangkat ini"><i class="fas fa-trash"></i></button>
       </div>
       <div class="chat-tips" id="chatTips">
         <i class="fas fa-shield-heart"></i>
@@ -698,7 +699,8 @@ Pedoman jawaban:
 /* =========================================================
    KONFIGURASI HEMAT READS
    ---------------------------------------------------------
-   - Pesan chat hanya berlaku 24 jam (query difilter + TTL Firestore)
+   - Pesan di server dihapus 24 jam (TTL), tapi riwayat disimpan di IndexedDB perangkat masing-masing
+   - Firestore hanya dibaca untuk pesan yang BELUM ada di perangkat
    - Pesan dimuat per halaman (PAGE_MSG)
    - Daftar murid dimuat per halaman (PAGE_MURID)
    - Daftar guru & jumlah murid di-cache (CACHE_MS)
@@ -726,12 +728,120 @@ let currentAnon    = false;
 let regRole = 'murid';
 let registering = false;
 
-// State pesan (paginasi)
+// State pesan (paginasi dari IndexedDB lokal)
 let msgMap = new Map();      // id -> pesan
-let msgCursor = null;        // dokumen terlama yang sudah dimuat (untuk startAfter)
+let msgOldestTs = null;      // ts pesan terlama yang sudah dimuat
 let msgHasMore = false;
-let msgFirstSnap = true;
 let msgLoadingOlder = false;
+let listenToken = 0;
+let chatsLocal = new Map();  // daftar percakapan (guru) dari IndexedDB + server
+
+/* =========================================================
+   INDEXEDDB LOKAL (per akun) — riwayat chat tersimpan di perangkat
+   ========================================================= */
+let idbP = null;
+function getIDB(){
+  if(idbP) return idbP;
+  idbP = new Promise((resolve) => {
+    try {
+      if(!window.indexedDB || !ME) return resolve(null);
+      const req = indexedDB.open('curhatbk_' + ME.uid, 1);
+      req.onupgradeneeded = () => {
+        const d = req.result;
+        const ms = d.createObjectStore('messages', { keyPath: 'id' });
+        ms.createIndex('chat_ts', ['chatId', 'ts']);
+        d.createObjectStore('chats', { keyPath: 'id' });
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => resolve(null);
+      req.onblocked = () => resolve(null);
+    } catch(_){ resolve(null); }
+  });
+  return idbP;
+}
+function closeIDB(){
+  if(idbP){ idbP.then(d => d && d.close()).catch(()=>{}); idbP = null; }
+}
+const txDone = tx => new Promise(res => {
+  tx.oncomplete = () => res(true);
+  tx.onerror = () => res(false);
+  tx.onabort = () => res(false);
+});
+
+async function idbPutMessages(arr){
+  const d = await getIDB();
+  if(!d || !arr.length) return;
+  try {
+    const tx = d.transaction('messages', 'readwrite');
+    arr.forEach(m => tx.objectStore('messages').put(m));
+    await txDone(tx);
+  } catch(_){}
+}
+// ambil `count` pesan terbaru (urut terbaru -> lama), opsional sebelum ts tertentu
+async function idbPage(chatId, beforeTs, count){
+  const d = await getIDB();
+  if(!d) return [];
+  return new Promise((resolve) => {
+    const out = [];
+    try {
+      const upper = beforeTs == null ? [chatId, Infinity] : [chatId, beforeTs];
+      const range = IDBKeyRange.bound([chatId, 0], upper, false, beforeTs != null);
+      const req = d.transaction('messages').objectStore('messages').index('chat_ts').openCursor(range, 'prev');
+      req.onsuccess = () => {
+        const c = req.result;
+        if(c && out.length < count){ out.push(c.value); c.continue(); }
+        else resolve(out);
+      };
+      req.onerror = () => resolve(out);
+    } catch(_){ resolve(out); }
+  });
+}
+async function idbClearChat(chatId){
+  const d = await getIDB();
+  if(!d) return false;
+  return new Promise((resolve) => {
+    try {
+      const tx = d.transaction('messages', 'readwrite');
+      const req = tx.objectStore('messages').index('chat_ts')
+        .openCursor(IDBKeyRange.bound([chatId, 0], [chatId, Infinity]));
+      req.onsuccess = () => { const c = req.result; if(c){ c.delete(); c.continue(); } };
+      tx.oncomplete = () => resolve(true);
+      tx.onerror = tx.onabort = () => resolve(false);
+    } catch(_){ resolve(false); }
+  });
+}
+async function idbPutChats(arr){
+  const d = await getIDB();
+  if(!d || !arr.length) return;
+  try {
+    const tx = d.transaction('chats', 'readwrite');
+    arr.forEach(c => tx.objectStore('chats').put(c));
+    await txDone(tx);
+  } catch(_){}
+}
+async function idbGetChat(id){
+  const d = await getIDB();
+  if(!d) return null;
+  return new Promise((resolve) => {
+    try {
+      const req = d.transaction('chats').objectStore('chats').get(id);
+      req.onsuccess = () => resolve(req.result || null);
+      req.onerror = () => resolve(null);
+    } catch(_){ resolve(null); }
+  });
+}
+async function idbAllChats(){
+  const d = await getIDB();
+  if(!d) return [];
+  return new Promise((resolve) => {
+    try {
+      const req = d.transaction('chats').objectStore('chats').getAll();
+      req.onsuccess = () => resolve(req.result || []);
+      req.onerror = () => resolve([]);
+    } catch(_){ resolve([]); }
+  });
+}
+function addLocalMsg(r){ msgMap.set(r.id, { ...r, _d: new Date(r.ts) }); }
 
 // State daftar murid (paginasi)
 let muridList = [];
@@ -934,9 +1044,12 @@ function cleanupListeners(){
   currentPartner = null;
   currentChatId = null;
   currentAnon = false;
-  msgMap = new Map(); msgCursor = null; msgHasMore = false;
+  listenToken++;
+  msgMap = new Map(); msgOldestTs = null; msgHasMore = false;
+  chatsLocal = new Map();
   muridList = []; muridCursor = null; muridDone = false;
   knownChats.clear();
+  closeIDB();
 }
 
 /* =========================================================
@@ -953,6 +1066,7 @@ async function enterApp(user){
     cleanupListeners();
     ME = snap.data();
     nameCache.set(ME.uid, ME.nama);
+    try { navigator.storage?.persist?.(); } catch(_){}
 
     $('authScreen').classList.remove('show');
     $('app').style.display = 'flex';
@@ -1020,8 +1134,9 @@ window.nav = (name) => {
   const isChat = (name === 'ai' || name === 'chatroom');
   $('topbar').classList.toggle('hide', isChat);
 
-  if(name !== 'chatroom' && unsubMsgs){
-    unsubMsgs(); unsubMsgs = null;
+  if(name !== 'chatroom' && (unsubMsgs || currentChatId)){
+    unsubMsgs?.(); unsubMsgs = null;
+    listenToken++;
     currentPartner = null; currentChatId = null; currentAnon = false;
   }
 
@@ -1253,6 +1368,8 @@ async function ensureChatDoc(force = false){
   if(!force && knownChats.has(currentChatId)) return;
   const ref = doc(db, 'chats', currentChatId);
   const snap = await getDoc(ref);
+  const localMeta = await idbGetChat(currentChatId);
+  let aliasUsed = snap.exists() ? (snap.data().anonAlias || null) : null;
   if(!snap.exists()){
     const muridId = ME.role === 'murid' ? ME.uid : currentPartner.uid;
     const guruId  = ME.role === 'guru'  ? ME.uid : currentPartner.uid;
@@ -1266,13 +1383,25 @@ async function ensureChatDoc(force = false){
       anonim: currentAnon
     };
     if(currentAnon){
-      data.anonAlias = 'Anonim-' + String(Math.floor(1000 + Math.random()*9000));
+      // pakai alias lama (dari perangkat) jika chat sempat terhapus TTL
+      data.anonAlias = localMeta?.alias || ('Anonim-' + String(Math.floor(1000 + Math.random()*9000)));
+      aliasUsed = data.anonAlias;
     } else {
       // simpan nama murid di dokumen chat -> guru tidak perlu getDoc per percakapan
       data.muridNama = ME.role === 'murid' ? ME.nama : currentPartner.nama;
     }
     await setDoc(ref, data);
   }
+  idbPutChats([{
+    ...(localMeta || {}),
+    id: currentChatId,
+    otherId: currentPartner.uid,
+    anon: currentAnon,
+    alias: aliasUsed,
+    muridNama: currentAnon ? null : (ME.role === 'murid' ? ME.nama : currentPartner.nama),
+    lastMessage: localMeta?.lastMessage || '',
+    lastAtMs: localMeta?.lastAtMs || Date.now()
+  }]);
   knownChats.add(currentChatId);
 }
 
@@ -1306,15 +1435,15 @@ function renderMsgs(mode){
 
   if(!items.length){
     box.innerHTML = currentAnon
-      ? '<div class="empty"><i class="fas fa-user-secret"></i><h4>Chat anonim</h4><p>Guru BK tidak akan melihat namamu di percakapan ini 💚<br>Pesan otomatis terhapus setelah 24 jam.</p></div>'
-      : '<div class="empty"><i class="fas fa-comment-dots"></i><h4>Belum ada pesan</h4><p>Mulai percakapan dengan sopan & jujur 💚<br>Pesan otomatis terhapus setelah 24 jam.</p></div>';
+      ? '<div class="empty"><i class="fas fa-user-secret"></i><h4>Chat anonim</h4><p>Guru BK tidak akan melihat namamu di percakapan ini 💚<br>Riwayat tersimpan di perangkat ini.</p></div>'
+      : '<div class="empty"><i class="fas fa-comment-dots"></i><h4>Belum ada pesan</h4><p>Mulai percakapan dengan sopan & jujur 💚<br>Riwayat tersimpan di perangkat ini.</p></div>';
     return;
   }
 
   const prevH = box.scrollHeight, prevT = box.scrollTop;
   let html = msgHasMore
     ? `<button class="loadmore" id="btnOlder" onclick="loadOlderMsgs()"><i class="fas fa-clock-rotate-left"></i> Muat pesan sebelumnya</button>`
-    : `<div class="ttl-note"><i class="fas fa-hourglass-half"></i> Pesan otomatis terhapus setelah 24 jam</div>`;
+    : `<div class="ttl-note"><i class="fas fa-mobile-screen"></i> Riwayat chat tersimpan di perangkat ini (server menghapus setelah 24 jam)</div>`;
   let lastDay = '';
   let lastMine = true;
 
@@ -1354,56 +1483,74 @@ function renderMsgs(mode){
   return lastMine;
 }
 
-function listenMessages(){
-  unsubMsgs?.();
+async function listenMessages(){
+  unsubMsgs?.(); unsubMsgs = null;
+  const token = ++listenToken;
+  const chatId = currentChatId;
   const box = $('chat-msgs');
   box.innerHTML = '<div class="empty"><i class="fas fa-spinner fa-spin"></i><p>Memuat pesan...</p></div>';
 
   msgMap = new Map();
-  msgCursor = null;
+  msgOldestTs = null;
   msgHasMore = false;
-  msgFirstSnap = true;
 
-  const cutoff = Timestamp.fromMillis(Date.now() - CHAT_TTL_MS);
-  // Hanya PAGE_MSG pesan terbaru (maks 24 jam) yang dibaca secara realtime
+  // 1) Riwayat dari IndexedDB perangkat -> 0 reads Firestore
+  const local = await idbPage(chatId, null, PAGE_MSG);
+  if(token !== listenToken || chatId !== currentChatId) return;
+  local.forEach(addLocalMsg);
+  if(local.length){
+    msgOldestTs = local[local.length - 1].ts;
+    msgHasMore = local.length >= PAGE_MSG;
+    renderMsgs('bottom');
+  }
+
+  // 2) Firestore hanya untuk pesan yang BELUM ada di perangkat (lebih baru dari pesan lokal terbaru)
+  const newest = local[0];
+  const floor = Date.now() - CHAT_TTL_MS;
+  let start = Timestamp.fromMillis(floor);
+  if(newest && newest.ts > floor) start = new Timestamp(newest.s, newest.n);
+
   const q = query(
-    collection(db, 'chats', currentChatId, 'messages'),
-    where('createdAt', '>', cutoff),
-    orderBy('createdAt', 'desc'),
-    limit(PAGE_MSG)
+    collection(db, 'chats', chatId, 'messages'),
+    where('createdAt', '>', start),
+    orderBy('createdAt', 'asc'),
+    limit(300)
   );
 
   unsubMsgs = onSnapshot(q, (snap) => {
-    snap.docs.forEach(addMsgDoc);
-    if(msgFirstSnap){
-      msgFirstSnap = false;
-      if(snap.size >= PAGE_MSG){
-        msgCursor = snap.docs[snap.docs.length - 1];
-        msgHasMore = true;
-      }
-    }
+    if(token !== listenToken) return;
+    const toSave = [];
+    snap.docs.forEach(d => {
+      const m = d.data({ serverTimestamps: 'estimate' });
+      const t = tsToDate(m.createdAt) || new Date();
+      const rec = {
+        id: d.id, chatId,
+        senderId: m.senderId, senderRole: m.senderRole, senderNama: m.senderNama,
+        text: m.text,
+        ts: t.getTime(),
+        s: m.createdAt?.seconds ?? Math.floor(t.getTime() / 1000),
+        n: m.createdAt?.nanoseconds ?? 0
+      };
+      msgMap.set(d.id, { ...rec, _d: t });
+      if(!d.metadata.hasPendingWrites) toSave.push(rec);
+    });
+    if(toSave.length) idbPutMessages(toSave);
     const lastMine = renderMsgs('bottom');
     if(lastMine === false) markRead();
   }, err => console.error(err));
 }
 
+// Muat pesan lebih lama dari IndexedDB (tanpa membaca Firestore)
 window.loadOlderMsgs = async () => {
-  if(msgLoadingOlder || !msgHasMore || !msgCursor || !currentChatId) return;
+  if(msgLoadingOlder || !msgHasMore || msgOldestTs == null || !currentChatId) return;
   msgLoadingOlder = true;
   const btn = $('btnOlder');
   if(btn){ btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Memuat...'; }
   try {
-    const cutoff = Timestamp.fromMillis(Date.now() - CHAT_TTL_MS);
-    const snap = await getDocs(query(
-      collection(db, 'chats', currentChatId, 'messages'),
-      where('createdAt', '>', cutoff),
-      orderBy('createdAt', 'desc'),
-      startAfter(msgCursor),
-      limit(PAGE_MSG)
-    ));
-    snap.docs.forEach(addMsgDoc);
-    if(snap.size > 0) msgCursor = snap.docs[snap.docs.length - 1];
-    msgHasMore = snap.size >= PAGE_MSG;
+    const page = await idbPage(currentChatId, msgOldestTs, PAGE_MSG);
+    page.forEach(addLocalMsg);
+    if(page.length) msgOldestTs = page[page.length - 1].ts;
+    msgHasMore = page.length >= PAGE_MSG;
     renderMsgs('keep');
   } catch(err){
     console.error(err);
@@ -1413,12 +1560,21 @@ window.loadOlderMsgs = async () => {
   }
 };
 
+window.clearLocalChat = async () => {
+  if(!currentChatId) return;
+  if(!confirm('Hapus riwayat chat ini dari perangkat ini? Ini tidak bisa dibatalkan.')) return;
+  await idbClearChat(currentChatId);
+  msgMap = new Map(); msgOldestTs = null; msgHasMore = false;
+  renderMsgs('bottom');
+};
+
 window.closeChat = () => {
   unsubMsgs?.(); unsubMsgs = null;
   currentPartner = null;
   currentChatId = null;
   currentAnon = false;
-  msgMap = new Map(); msgCursor = null; msgHasMore = false;
+  listenToken++;
+  msgMap = new Map(); msgOldestTs = null; msgHasMore = false;
   nav(ME.role === 'guru' ? 'gchat' : 'curhat');
 };
 
@@ -1693,61 +1849,85 @@ function listenMonitoring(){
 /* =========================================================
    GURU: CHAT LIST — maks 50 percakapan, nama dari dokumen chat / cache
    ========================================================= */
-function listenChatListGuru(){
-  unsubChats?.();
+function renderChatListGuru(){
+  const box = $('gchatList');
+  const chats = [...chatsLocal.values()].sort((a,b) => (b.lastAtMs||0) - (a.lastAtMs||0));
+
+  const unread = chats.filter(c => c.unread).length;
+  const badge = $('chatBadge');
+  if(unread > 0){ badge.style.display = 'flex'; badge.textContent = unread > 9 ? '9+' : unread; }
+  else badge.style.display = 'none';
+
+  if(!chats.length){
+    box.innerHTML = '<div class="empty"><i class="fas fa-comment-slash"></i><h4>Belum ada percakapan</h4><p>Murid akan muncul di sini setelah memulai chat</p></div>';
+    return;
+  }
+
+  box.innerHTML = chats.map(c => {
+    const anon  = !!c.anon;
+    const alias = c.alias || 'Anonim';
+    const nama  = c.muridNama || nameCache.get(c.otherId) || 'Memuat…';
+    return `<div class="row" data-chat="${esc(c.id)}" data-open="list" data-uid="${esc(c.otherId)}"${anon ? ` data-anon="1" data-alias="${esc(alias)}"` : ''}>
+      <div class="av ${anon ? 'pink' : ''}"><i class="fas ${anon ? 'fa-user-secret' : 'fa-user-graduate'}"></i></div>
+      <div class="info">
+        <h4>${anon ? esc(alias) + ' <span class="anon-tag">Anonim</span>' : esc(nama)}</h4>
+        <p>${esc(c.lastMessage || 'Belum ada pesan')} • ${fmtDT(c.lastAtMs ? new Date(c.lastAtMs) : null)}</p>
+      </div>
+      <i class="fas fa-chevron-right chev"></i>
+    </div>`;
+  }).join('');
+}
+
+async function listenChatListGuru(){
+  unsubChats?.(); unsubChats = null;
+  const myUid = ME.uid;
+
+  chatsLocal = new Map();
+  (await idbAllChats()).forEach(c => chatsLocal.set(c.id, { ...c, unread: false }));
+  if(!ME || ME.uid !== myUid) return;
+  renderChatListGuru();
+
   const q = query(
     collection(db,'chats'),
     where('participants','array-contains', ME.uid),
     limit(CHATLIST_LIMIT)
   );
   unsubChats = onSnapshot(q, (snap) => {
-    const chats = snap.docs.map(d => ({ id:d.id, ...d.data(), _d: tsToDate(d.data().lastAt) }))
-      .sort((a,b) => (b._d?.getTime()||0) - (a._d?.getTime()||0));
-
-    const box = $('gchatList');
-
-    const unread = chats.filter(c => {
-      if(!c.lastSender || c.lastSender === ME.uid || !c._d) return false;
-      const lr = c.lastRead?.[ME.uid];
-      if(!lr) return true;
-      const lrD = tsToDate(lr);
-      return lrD ? lrD.getTime() < c._d.getTime() : false;
-    }).length;
-    const badge = $('chatBadge');
-    if(unread > 0){ badge.style.display = 'flex'; badge.textContent = unread > 9 ? '9+' : unread; }
-    else badge.style.display = 'none';
-
-    if(!chats.length){
-      box.innerHTML = '<div class="empty"><i class="fas fa-comment-slash"></i><h4>Belum ada percakapan</h4><p>Murid akan muncul di sini setelah memulai chat<br>(percakapan hilang otomatis setelah 24 jam tanpa pesan)</p></div>';
-      return;
-    }
-
-    box.innerHTML = chats.map(c => {
+    const toSave = [];
+    snap.docs.forEach(d => {
+      const c = d.data({ serverTimestamps: 'estimate' });
+      const dt = tsToDate(c.lastAt);
       const otherId = c.participants.find(p => p !== ME.uid);
-      const anon  = !!c.anonim;
-      const alias = c.anonAlias || 'Anonim';
-      const nama  = c.muridNama || nameCache.get(otherId) || 'Memuat…';
-      return `<div class="row" data-chat="${esc(c.id)}" data-open="list" data-uid="${esc(otherId)}"${anon ? ` data-anon="1" data-alias="${esc(alias)}"` : ''}>
-        <div class="av ${anon ? 'pink' : ''}"><i class="fas ${anon ? 'fa-user-secret' : 'fa-user-graduate'}"></i></div>
-        <div class="info">
-          <h4>${anon ? esc(alias) + ' <span class="anon-tag">Anonim</span>' : esc(nama)}</h4>
-          <p>${esc(c.lastMessage || 'Belum ada pesan')} • ${fmtDT(c._d)}</p>
-        </div>
-        <i class="fas fa-chevron-right chev"></i>
-      </div>`;
-    }).join('');
+      let unread = false;
+      if(c.lastSender && c.lastSender !== ME.uid && dt){
+        const lr = tsToDate(c.lastRead?.[ME.uid]);
+        unread = !lr || lr.getTime() < dt.getTime();
+      }
+      const meta = {
+        id: d.id, otherId,
+        anon: !!c.anonim,
+        alias: c.anonAlias || null,
+        muridNama: c.muridNama || nameCache.get(otherId) || chatsLocal.get(d.id)?.muridNama || null,
+        lastMessage: c.lastMessage || '',
+        lastAtMs: dt ? dt.getTime() : Date.now(),
+        lastSender: c.lastSender || null
+      };
+      chatsLocal.set(d.id, { ...meta, unread });
+      toSave.push(meta);
+    });
+    idbPutChats(toSave);
+    renderChatListGuru();
 
-    // Ambil nama hanya untuk chat lama yang belum punya muridNama & belum ada di cache
-    chats.forEach(async (c) => {
-      if(c.anonim || c.muridNama) return;
-      const otherId = c.participants.find(p => p !== ME.uid);
-      if(nameCache.has(otherId)) return;
+    chatsLocal.forEach(async (c) => {
+      if(c.anon || c.muridNama || nameCache.has(c.otherId)) return;
       try {
-        const u = await getDoc(doc(db,'users',otherId));
+        const u = await getDoc(doc(db,'users',c.otherId));
         if(u.exists()){
-          nameCache.set(otherId, u.data().nama);
-          const row = box.querySelector(`[data-chat="${CSS.escape(c.id)}"] h4`);
-          if(row) row.textContent = u.data().nama;
+          const nm = u.data().nama;
+          nameCache.set(c.otherId, nm);
+          c.muridNama = nm;
+          idbPutChats([{ id:c.id, otherId:c.otherId, anon:c.anon, alias:c.alias, muridNama:nm, lastMessage:c.lastMessage, lastAtMs:c.lastAtMs, lastSender:c.lastSender }]);
+          renderChatListGuru();
         }
       } catch(e){}
     });
